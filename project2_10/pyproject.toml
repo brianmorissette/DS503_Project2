@@ -1,0 +1,12 @@
+[project]
+name = "project2-10"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "kagglehub>=1.0.0",
+    "matplotlib>=3.10.8",
+    "pandas>=2.0.0",
+    "scikit-learn>=1.8.0",
+]

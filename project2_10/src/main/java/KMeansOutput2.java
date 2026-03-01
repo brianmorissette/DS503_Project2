@@ -23,16 +23,18 @@ import java.util.Random;
 
 public class KMeansOutput2 {
 
+    // Data bounds for random seeds
     private static final double W_MIN = 0.0, W_MAX = 10_000.0;
     private static final double X_MIN = 20_000.0, X_MAX = 1_000_000.0;
-    private static final double Y_MIN = 0.0, Y_MAX = 1.0;
-    private static final double Z_MIN = 0.0, Z_MAX = 1.0;
+    private static final double Y_MIN = 0.0, Y_MAX = 500_000.0;
+    private static final double Z_MIN = 0.0, Z_MAX = 50_000.0;
 
     public static class KMeansMapper extends Mapper<Object, Text, IntWritable, Text> {
         private List<double[]> centroids = new ArrayList<>();
         private IntWritable nearestCentroidId = new IntWritable();
         private Text pointText = new Text();
 
+        // Load centroids from DistributedCache
         @Override
         protected void setup(Context context) throws IOException, InterruptedException {
             Path[] localFiles = DistributedCache.getLocalCacheFiles(context.getConfiguration());
@@ -59,6 +61,7 @@ public class KMeansOutput2 {
         @Override
         public void map(Object key, Text value, Context context) throws IOException, InterruptedException {
             String line = value.toString();
+            // Skip the header row
             if (line.startsWith("w,x,y,z") || line.trim().isEmpty()) return;
 
             String[] parts = line.split(",");
@@ -67,6 +70,7 @@ public class KMeansOutput2 {
                 Double.parseDouble(parts[2]), Double.parseDouble(parts[3])
             };
 
+            // Find nearest centroid using 4D Euclidean distance
             int nearestId = -1;
             double minDistance = Double.MAX_VALUE;
             for (int i = 0; i < centroids.size(); i++) {
@@ -87,6 +91,7 @@ public class KMeansOutput2 {
         }
     }
 
+    // Pre-aggregate partial sums for reducer
     public static class KMeansCombiner extends Reducer<IntWritable, Text, IntWritable, Text> {
         private Text partialSumText = new Text();
 
@@ -111,6 +116,7 @@ public class KMeansOutput2 {
     public static class KMeansReducer extends Reducer<IntWritable, Text, IntWritable, Text> {
         private Text newCentroidText = new Text();
 
+        // Average points by cluster to compute new centroid
         @Override
         public void reduce(IntWritable key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
             double sumW = 0, sumX = 0, sumY = 0, sumZ = 0;
@@ -132,15 +138,13 @@ public class KMeansOutput2 {
         }
     }
 
-    /**
-     * Mapper for assignment job: assigns each point to nearest centroid and outputs
-     * point with its cluster center.
-     */
+    // Mapper for assignment job: assigns each point to nearest centroid, outputs point with cluster center
     public static class AssignMapper extends Mapper<Object, Text, IntWritable, Text> {
         private List<double[]> centroids = new ArrayList<>();
         private IntWritable clusterId = new IntWritable();
         private Text pointWithCentroid = new Text();
 
+        // Load centroids from DistributedCache
         @Override
         protected void setup(Context context) throws IOException, InterruptedException {
             Path[] localFiles = DistributedCache.getLocalCacheFiles(context.getConfiguration());
@@ -167,6 +171,7 @@ public class KMeansOutput2 {
         @Override
         public void map(Object key, Text value, Context context) throws IOException, InterruptedException {
             String line = value.toString();
+            // Skip the header row
             if (line.startsWith("w,x,y,z") || line.trim().isEmpty()) return;
 
             String[] parts = line.split(",");
@@ -175,6 +180,7 @@ public class KMeansOutput2 {
                 Double.parseDouble(parts[2]), Double.parseDouble(parts[3])
             };
 
+            // Find nearest centroid using 4D Euclidean distance
             int nearestId = -1;
             double minDistance = Double.MAX_VALUE;
             for (int i = 0; i < centroids.size(); i++) {
@@ -197,9 +203,7 @@ public class KMeansOutput2 {
         }
     }
 
-    /**
-     * Identity reducer for assignment job - passes through point with centroid.
-     */
+    // Identity reducer for assignment job: passes through point with centroid
     public static class AssignReducer extends Reducer<IntWritable, Text, IntWritable, Text> {
         @Override
         public void reduce(IntWritable key, Iterable<Text> values, Context context)
@@ -210,6 +214,7 @@ public class KMeansOutput2 {
         }
     }
 
+    // 4D Euclidean distance between two points
     private static double euclideanDistance(double[] a, double[] b) {
         return Math.sqrt(
             Math.pow(a[0] - b[0], 2) + Math.pow(a[1] - b[1], 2) +
@@ -217,6 +222,7 @@ public class KMeansOutput2 {
         );
     }
 
+    // Total centroid movement for early-stop check; returns Double.MAX_VALUE if any cluster is empty
     private static double computeCentroidMovement(List<double[]> oldCentroids, Map<Integer, double[]> newCentroids) {
         double totalMovement = 0;
         for (int i = 0; i < oldCentroids.size(); i++) {
@@ -227,6 +233,7 @@ public class KMeansOutput2 {
         return totalMovement;
     }
 
+    // Read centroids from seeds file on HDFS (format: one "w,x,y,z" per line)
     private static List<double[]> readOldCentroidsFromSeeds(FileSystem fs, Path seedsPath) throws IOException {
         List<double[]> centroids = new ArrayList<>();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(fs.open(seedsPath)))) {
@@ -244,6 +251,7 @@ public class KMeansOutput2 {
         return centroids;
     }
 
+    // Read new centroids from reducer output (format: clusterID\tw,x,y,z per line)
     private static Map<Integer, double[]> readNewCentroidsFromReducerOutput(FileSystem fs, Path outputDir) throws IOException {
         Map<Integer, double[]> newCentroids = new HashMap<>();
         org.apache.hadoop.fs.FileStatus[] outputFiles = fs.listStatus(outputDir,
@@ -297,6 +305,7 @@ public class KMeansOutput2 {
         String inputPath = args[3];
         String outputPath = args[4];
 
+        // Generate k random seeds within data bounds, upload to HDFS
         Random random = new Random();
         File localSeedsFile = File.createTempFile("kmeans_seeds_", ".txt");
         try (PrintWriter writer = new PrintWriter(localSeedsFile)) {
@@ -314,6 +323,7 @@ public class KMeansOutput2 {
         fs.copyFromLocalFile(new Path(localSeedsFile.getAbsolutePath()), hdfsSeedsPath);
         localSeedsFile.delete();
 
+        // Run R iterations; stop early if centroid movement falls below threshold
         boolean success = true;
         int lastIter = 0;
 
@@ -338,6 +348,7 @@ public class KMeansOutput2 {
                 System.exit(1);
             }
 
+            // Check early stopping; if not converged, prepare seeds for next iteration
             if (iter < R - 1) {
                 List<double[]> oldCentroids = readOldCentroidsFromSeeds(fs, hdfsSeedsPath);
                 Map<Integer, double[]> newCentroids = readNewCentroidsFromReducerOutput(fs, new Path(iterOutputPath));
@@ -345,6 +356,7 @@ public class KMeansOutput2 {
 
                 if (totalMovement < threshold) break;
 
+                // Write new seeds file (use old centroid for empty clusters), upload to HDFS
                 Path newSeedsPath = new Path("/tmp/kmeans_seeds_iter_" + (iter + 1) + ".txt");
                 try (PrintWriter writer = new PrintWriter(new File(newSeedsPath.getName()))) {
                     for (int i = 0; i < k; i++) {
@@ -363,7 +375,7 @@ public class KMeansOutput2 {
             }
         }
 
-        // Build final centroids file for assignment job (clusterId order: 0,1,...,k-1)
+        // Build final centroids file for assignment job (clusterId order 0..k-1; use fallback for empty clusters)
         Map<Integer, double[]> finalCentroids = readNewCentroidsFromReducerOutput(fs, new Path(outputPath + "/iter_" + lastIter));
         List<double[]> fallbackCentroids = readOldCentroidsFromSeeds(fs, hdfsSeedsPath);
         Path finalCentroidsPath = new Path("/tmp/kmeans_final_centroids_" + System.currentTimeMillis() + ".txt");
@@ -382,7 +394,7 @@ public class KMeansOutput2 {
         fs.copyFromLocalFile(new Path(localCentroidsFile.getAbsolutePath()), finalCentroidsPath);
         localCentroidsFile.delete();
 
-        // Assignment job: output each point with its cluster center
+        // Assignment job: output each point with its cluster center (clusterId\tpoint\tcentroid)
         Path clusteredOutputPath = new Path(outputPath + "/clustered");
         Job assignJob = Job.getInstance(conf, "K-Means Assign Points to Clusters");
         assignJob.setJarByClass(KMeansOutput2.class);

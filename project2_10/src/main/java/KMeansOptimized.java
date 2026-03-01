@@ -26,15 +26,15 @@ public class KMeansOptimized {
     // Data bounds to create random seeds
     private static final double W_MIN = 0.0, W_MAX = 10_000.0;
     private static final double X_MIN = 20_000.0, X_MAX = 1_000_000.0;
-    private static final double Y_MIN = 0.0, Y_MAX = 1.0;
-    private static final double Z_MIN = 0.0, Z_MAX = 1.0;
+    private static final double Y_MIN = 0.0, Y_MAX = 500_000.0;
+    private static final double Z_MIN = 0.0, Z_MAX = 50_000.0;
 
     public static class KMeansMapper extends Mapper<Object, Text, IntWritable, Text> {
         private List<double[]> centroids = new ArrayList<>();
         private IntWritable nearestCentroidId = new IntWritable();
         private Text pointText = new Text();
 
-        // Read the seeds file from the DistributedCache
+        // Load centroids from DistributedCache
         @Override
         protected void setup(Context context) throws IOException, InterruptedException {
             Path[] localFiles = DistributedCache.getLocalCacheFiles(context.getConfiguration());
@@ -76,7 +76,7 @@ public class KMeansOptimized {
             int nearestId = -1;
             double minDistance = Double.MAX_VALUE;
 
-            // 4D Euclidean distance calculation
+            // Find nearest centroid using 4D Euclidean distance
             for (int i = 0; i < centroids.size(); i++) {
                 double[] c = centroids.get(i);
                 double distance = Math.sqrt(
@@ -97,10 +97,7 @@ public class KMeansOptimized {
         }
     }
 
-    /**
-     * Combiner: pre-aggregates points by cluster on the mapper side to reduce
-     * data shuffled to reducers. Input/output format: "sumW,sumX,sumY,sumZ,count".
-     */
+    // Pre-aggregate partial sums for reducer
     public static class KMeansCombiner extends Reducer<IntWritable, Text, IntWritable, Text> {
         private Text partialSumText = new Text();
 
@@ -132,6 +129,7 @@ public class KMeansOptimized {
     public static class KMeansReducer extends Reducer<IntWritable, Text, IntWritable, Text> {
         private Text newCentroidText = new Text();
 
+        // Average points by cluster to compute new centroid
         @Override
         public void reduce(IntWritable key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
             double sumW = 0, sumX = 0, sumY = 0, sumZ = 0;
@@ -156,9 +154,7 @@ public class KMeansOptimized {
         }
     }
 
-    /**
-     * Computes 4D Euclidean distance between two centroids.
-     */
+    // 4D Euclidean distance between two points
     private static double euclideanDistance(double[] a, double[] b) {
         return Math.sqrt(
             Math.pow(a[0] - b[0], 2) + Math.pow(a[1] - b[1], 2) +
@@ -166,11 +162,7 @@ public class KMeansOptimized {
         );
     }
 
-    /**
-     * Computes total centroid movement as sum of Euclidean distances between
-     * old and new centroids (matched by cluster ID). Returns Double.MAX_VALUE
-     * if any cluster is missing from new centroids (e.g., empty cluster).
-     */
+    // Total centroid movement for early-stop check; returns Double.MAX_VALUE if any cluster is empty
     private static double computeCentroidMovement(List<double[]> oldCentroids,
             Map<Integer, double[]> newCentroids) {
         double totalMovement = 0;
@@ -184,9 +176,7 @@ public class KMeansOptimized {
         return totalMovement;
     }
 
-    /**
-     * Reads centroids from a seeds file on HDFS (format: one "w,x,y,z" per line).
-     */
+    // Read centroids from seeds file on HDFS (format: one "w,x,y,z" per line)
     private static List<double[]> readOldCentroidsFromSeeds(FileSystem fs, Path seedsPath) throws IOException {
         List<double[]> centroids = new ArrayList<>();
         try (BufferedReader reader = new BufferedReader(
@@ -205,9 +195,7 @@ public class KMeansOptimized {
         return centroids;
     }
 
-    /**
-     * Reads new centroids from reducer output directory (format: "clusterID\tw,x,y,z" per line).
-     */
+    // Read new centroids from reducer output (format: clusterID\tw,x,y,z per line)
     private static Map<Integer, double[]> readNewCentroidsFromReducerOutput(FileSystem fs, Path outputDir) throws IOException {
         Map<Integer, double[]> newCentroids = new HashMap<>();
         org.apache.hadoop.fs.FileStatus[] outputFiles = fs.listStatus(outputDir,
@@ -306,8 +294,8 @@ public class KMeansOptimized {
                 System.exit(1);
             }
 
-            // Read the output centroids and check for early stopping
-            if (iter < R - 1) {  // No need to prepare seeds after the last iteration
+            // Check early stopping; if not converged, prepare seeds for next iteration
+            if (iter < R - 1) {
                 List<double[]> oldCentroids = readOldCentroidsFromSeeds(fs, hdfsSeedsPath);
                 Map<Integer, double[]> newCentroids = readNewCentroidsFromReducerOutput(fs, new Path(iterOutputPath));
                 double totalMovement = computeCentroidMovement(oldCentroids, newCentroids);
@@ -317,10 +305,9 @@ public class KMeansOptimized {
                     break;
                 }
 
-                // Write new seeds file for next iteration (use old centroid for empty clusters)
+                // Write new seeds file (use old centroid for empty clusters), upload to HDFS
                 Path newSeedsPath = new Path("/tmp/kmeans_seeds_iter_" + (iter + 1) + ".txt");
-                try (PrintWriter writer = new PrintWriter(
-                        new File(newSeedsPath.getName()))) {
+                try (PrintWriter writer = new PrintWriter(new File(newSeedsPath.getName()))) {
                     for (int i = 0; i < k; i++) {
                         double[] c = newCentroids.get(i);
                         if (c != null) {
@@ -332,7 +319,6 @@ public class KMeansOptimized {
                     }
                 }
 
-                // Upload new seeds to HDFS
                 fs.copyFromLocalFile(new Path(newSeedsPath.getName()), newSeedsPath);
                 new File(newSeedsPath.getName()).delete();
                 hdfsSeedsPath = newSeedsPath;

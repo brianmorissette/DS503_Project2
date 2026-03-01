@@ -21,18 +21,18 @@ import java.util.Random;
 
 public class KMeansSingle {
 
-    // Data bounds to create random seeds
+    // Data bounds for random seeds
     private static final double W_MIN = 0.0, W_MAX = 10_000.0;
     private static final double X_MIN = 20_000.0, X_MAX = 1_000_000.0;
-    private static final double Y_MIN = 0.0, Y_MAX = 1.0;
-    private static final double Z_MIN = 0.0, Z_MAX = 1.0;
+    private static final double Y_MIN = 0.0, Y_MAX = 500_000.0;
+    private static final double Z_MIN = 0.0, Z_MAX = 50_000.0;
 
     public static class KMeansMapper extends Mapper<Object, Text, IntWritable, Text> {
         private List<double[]> centroids = new ArrayList<>();
         private IntWritable nearestCentroidId = new IntWritable();
         private Text pointText = new Text();
 
-        // Read the seeds file from the DistributedCache
+        // Load centroids from DistributedCache
         @Override
         protected void setup(Context context) throws IOException, InterruptedException {
             Path[] localFiles = DistributedCache.getLocalCacheFiles(context.getConfiguration());
@@ -74,7 +74,7 @@ public class KMeansSingle {
             int nearestId = -1;
             double minDistance = Double.MAX_VALUE;
 
-            // 4D Euclidean distance calculation
+            // Find nearest centroid using 4D Euclidean distance
             for (int i = 0; i < centroids.size(); i++) {
                 double[] c = centroids.get(i);
                 double distance = Math.sqrt(
@@ -97,6 +97,7 @@ public class KMeansSingle {
     public static class KMeansReducer extends Reducer<IntWritable, Text, IntWritable, Text> {
         private Text newCentroidText = new Text();
 
+        // Average points by cluster to compute new centroid
         @Override
         public void reduce(IntWritable key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
             double sumW = 0, sumX = 0, sumY = 0, sumZ = 0;
@@ -145,7 +146,7 @@ public class KMeansSingle {
         String inputPath = args[1];
         String outputPath = args[2];
 
-        // Generate k random seeds within data bounds
+        // Generate k random seeds within data bounds, upload to HDFS
         Random random = new Random();
         File localSeedsFile = File.createTempFile("kmeans_seeds_", ".txt");
         try {
@@ -159,7 +160,6 @@ public class KMeansSingle {
                 }
             }
 
-            // Upload seeds to HDFS
             FileSystem fs = FileSystem.get(conf);
             Path hdfsSeedsPath = new Path("/tmp/kmeans_seeds_" + System.currentTimeMillis() + ".txt");
             fs.copyFromLocalFile(new Path(localSeedsFile.getAbsolutePath()), hdfsSeedsPath);
@@ -174,6 +174,7 @@ public class KMeansSingle {
 
             job.addCacheFile(hdfsSeedsPath.toUri());
 
+            // Configure and run MapReduce job
             FileInputFormat.addInputPath(job, new Path(inputPath));
             FileOutputFormat.setOutputPath(job, new Path(outputPath));
 

@@ -7,10 +7,10 @@ NUM_POINTS = 6000
 
 W_MIN, W_MAX = 0.0, 10_000.0
 X_MIN, X_MAX = 20_000.0, 1_000_000.0
-Y_MIN, Y_MAX = 0.0, 
-Z_MIN, Z_MAX = 0.0, 1.0
+Y_MIN, Y_MAX = 0.0, 500_000.0
+Z_MIN, Z_MAX = 0.0, 50_000.0
 
-OUTPUT_FILENAME = "dataset.csv"
+OUTPUT_FILENAME = "random_dataset.csv"
 
 
 def generate_point() -> Tuple[float, float, float, float]:

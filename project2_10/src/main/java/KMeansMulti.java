@@ -21,18 +21,18 @@ import java.util.Random;
 
 public class KMeansMulti {
 
-    // Data bounds to create random seeds
+    // Data bounds for random seeds
     private static final double W_MIN = 0.0, W_MAX = 10_000.0;
     private static final double X_MIN = 20_000.0, X_MAX = 1_000_000.0;
-    private static final double Y_MIN = 0.0, Y_MAX = 1.0;
-    private static final double Z_MIN = 0.0, Z_MAX = 1.0;
+    private static final double Y_MIN = 0.0, Y_MAX = 500_000.0;
+    private static final double Z_MIN = 0.0, Z_MAX = 50_000.0;
 
     public static class KMeansMapper extends Mapper<Object, Text, IntWritable, Text> {
         private List<double[]> centroids = new ArrayList<>();
         private IntWritable nearestCentroidId = new IntWritable();
         private Text pointText = new Text();
 
-        // Read the seeds file from the DistributedCache
+        // Load centroids from DistributedCache
         @Override
         protected void setup(Context context) throws IOException, InterruptedException {
             Path[] localFiles = DistributedCache.getLocalCacheFiles(context.getConfiguration());
@@ -74,7 +74,7 @@ public class KMeansMulti {
             int nearestId = -1;
             double minDistance = Double.MAX_VALUE;
 
-            // 4D Euclidean distance calculation
+            // Find nearest centroid using 4D Euclidean distance
             for (int i = 0; i < centroids.size(); i++) {
                 double[] c = centroids.get(i);
                 double distance = Math.sqrt(
@@ -97,6 +97,7 @@ public class KMeansMulti {
     public static class KMeansReducer extends Reducer<IntWritable, Text, IntWritable, Text> {
         private Text newCentroidText = new Text();
 
+        // Average points by cluster to compute new centroid
         @Override
         public void reduce(IntWritable key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
             double sumW = 0, sumX = 0, sumY = 0, sumZ = 0;
@@ -146,7 +147,7 @@ public class KMeansMulti {
         String inputPath = args[2];
         String outputPath = args[3];
 
-        // Generate k random seeds (only once)
+        // Generate k random seeds within data bounds (only once)
         Random random = new Random();
         File localSeedsFile = File.createTempFile("kmeans_seeds_", ".txt");
         try (PrintWriter writer = new PrintWriter(localSeedsFile)) {
@@ -165,7 +166,7 @@ public class KMeansMulti {
         fs.copyFromLocalFile(new Path(localSeedsFile.getAbsolutePath()), hdfsSeedsPath);
         localSeedsFile.delete();
 
-        // Run R iterations
+        // Run R iterations; each iteration uses previous centroids as seeds
         boolean success = true;
         for (int iter = 0; iter < R; iter++) {
             String iterOutputPath = outputPath + "/iter_" + iter;
@@ -189,37 +190,30 @@ public class KMeansMulti {
                 System.exit(1);
             }
 
-            // Read the output centroids and write them to a new seeds file for next iteration
-            if (iter < R - 1) {  // No need to prepare seeds after the last iteration
+            // Prepare seeds for next iteration: read reducer output, write to local file, upload to HDFS
+            if (iter < R - 1) {
                 Path newSeedsPath = new Path("/tmp/kmeans_seeds_iter_" + (iter + 1) + ".txt");
-                
-                try (PrintWriter writer = new PrintWriter(
-                        new File(newSeedsPath.getName()))) {
-                    
-                    // The reducer output files are named part-r-00000, part-r-00001, etc.
-                    org.apache.hadoop.fs.FileStatus[] outputFiles = 
-                        fs.listStatus(new Path(iterOutputPath), 
+
+                // Read all part-r-* files from reducer output (format: clusterID\tw,x,y,z)
+                try (PrintWriter writer = new PrintWriter(new File(newSeedsPath.getName()))) {
+                    org.apache.hadoop.fs.FileStatus[] outputFiles =
+                        fs.listStatus(new Path(iterOutputPath),
                             path -> path.getName().startsWith("part-r-"));
-                    
+
                     for (org.apache.hadoop.fs.FileStatus fileStatus : outputFiles) {
                         try (BufferedReader reader = new BufferedReader(
                                 new InputStreamReader(fs.open(fileStatus.getPath())))) {
                             String line;
                             while ((line = reader.readLine()) != null) {
-                                // Each line is "clusterID\tnewCentroid"
-                                // We only want the centroid part (after the tab)
                                 String centroid = line.split("\t")[1];
                                 writer.println(centroid);
                             }
                         }
                     }
                 }
-                
-                // Upload new seeds to HDFS
+
                 fs.copyFromLocalFile(new Path(newSeedsPath.getName()), newSeedsPath);
-                // Delete the local seeds file
                 new File(newSeedsPath.getName()).delete();
-                // Point to new seeds for next iteration
                 hdfsSeedsPath = newSeedsPath;
             }
         }
