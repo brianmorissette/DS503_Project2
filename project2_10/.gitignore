@@ -1,6 +1,4 @@
 target/
-random_dataset.csv
-kaggle_dataset.csv
+data/
 .venv/
-vis_kaggle.csv
-vis_random.csv
+
